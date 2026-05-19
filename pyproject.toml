@@ -1,0 +1,79 @@
+[project]
+name = "puzzle-monorepo"
+version = "0.1.0"
+description = "Puzzle SDK and Gateway Phase 0/1 monorepo"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = [
+  "packages/shared",
+  "packages/puzzle",
+  "services/gateway",
+  "services/worker",
+  "services/telemetry",
+]
+
+[tool.uv]
+dev-dependencies = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "types-requests>=2.32",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
+ignore = ["PLR0913", "PLR0917"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = [
+  "packages/shared/src",
+  "packages/puzzle/src",
+  "services/gateway/src",
+  "services/worker/src",
+  "services/telemetry/src",
+]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+  "google.*",
+  "redis.*",
+  "opentelemetry.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=puzzle_shared --cov=puzzle_gateway --cov=puzzle --cov-report=term-missing --cov-fail-under=85"
+testpaths = ["tests"]
+pythonpath = [
+  "packages/shared/src",
+  "packages/puzzle/src",
+  "services/gateway/src",
+  "services/worker/src",
+  "services/telemetry/src",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["packages/shared/src", "packages/puzzle/src", "services/gateway/src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]

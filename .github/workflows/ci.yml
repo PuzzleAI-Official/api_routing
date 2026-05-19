@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-packages --dev
+      - run: uv run ruff check .
+      - run: uv run mypy packages services tests
+      - run: uv run pytest
+      - run: uv run alembic -c services/gateway/alembic.ini check
+      - run: docker build -f services/gateway/Dockerfile .
+      - run: docker build -f services/worker/Dockerfile .
+      - run: docker build -f services/telemetry/Dockerfile .
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check
+      - run: terraform init -backend=false
+      - run: terraform validate
