@@ -35,6 +35,19 @@ services:
     ports:
       - "4443:4443"
 
+  migrate:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    command: ["python", "-m", "puzzle_gateway.migration_bootstrap"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://puzzle:puzzle@postgres:5432/puzzle
+      PUZZLE_ENV: local
+      PUZZLE_ENABLE_ADMIN_API: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   gateway:
     build:
       context: .
@@ -44,11 +57,16 @@ services:
       REDIS_URL: redis://redis:6379/0
       PUBSUB_EMULATOR_HOST: pubsub:8681
       PUZZLE_ENV: local
+      PUZZLE_ENABLE_ADMIN_API: "true"
+      PUZZLE_ADMIN_TOKEN: local-admin-token
+      PUZZLE_OBJECT_STORE_ROOT: /data/object-store
+    volumes:
+      - puzzle-object-store:/data/object-store
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -61,9 +79,13 @@ services:
       REDIS_URL: redis://redis:6379/0
       PUBSUB_EMULATOR_HOST: pubsub:8681
       PUZZLE_ENV: local
+      PUZZLE_ENABLE_ADMIN_API: "false"
+      PUZZLE_OBJECT_STORE_ROOT: /data/object-store
+    volumes:
+      - puzzle-object-store:/data/object-store
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -75,6 +97,10 @@ services:
       DATABASE_URL: postgresql+psycopg://puzzle:puzzle@postgres:5432/puzzle
       PUBSUB_EMULATOR_HOST: pubsub:8681
       PUZZLE_ENV: local
+      PUZZLE_ENABLE_ADMIN_API: "false"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  puzzle-object-store:

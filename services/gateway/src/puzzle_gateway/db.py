@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from puzzle_gateway.config import settings
@@ -14,7 +14,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 def create_all() -> None:
-    Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        if engine.dialect.name == "postgresql":
+            connection.execute(text("SELECT pg_advisory_xact_lock(842017901)"))
+        Base.metadata.create_all(bind=connection)
 
 
 def get_session() -> Generator[Session, None, None]:

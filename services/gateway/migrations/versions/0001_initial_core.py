@@ -158,6 +158,27 @@ def upgrade() -> None:
     op.create_index("ix_telemetry_events_tenant_id", "telemetry_events", ["tenant_id"])
     op.create_index("ix_telemetry_events_event_type", "telemetry_events", ["event_type"])
     op.create_table(
+        "telemetry_outbox_events",
+        sa.Column("id", sa.String(length=36), primary_key=True),
+        sa.Column("tenant_id", sa.String(length=36), sa.ForeignKey("tenants.id"), nullable=False),
+        sa.Column("event_type", sa.String(length=100), nullable=False),
+        sa.Column("payload_json", sa.JSON(), nullable=False),
+        sa.Column("status", sa.String(length=30), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    op.create_index(
+        "ix_telemetry_outbox_events_tenant_id",
+        "telemetry_outbox_events",
+        ["tenant_id"],
+    )
+    op.create_index(
+        "ix_telemetry_outbox_events_event_type",
+        "telemetry_outbox_events",
+        ["event_type"],
+    )
+    op.create_index("ix_telemetry_outbox_events_status", "telemetry_outbox_events", ["status"])
+    op.create_table(
         "audit_log_entries",
         sa.Column("id", sa.String(length=36), primary_key=True),
         sa.Column("tenant_id", sa.String(length=36), sa.ForeignKey("tenants.id"), nullable=False),
@@ -190,6 +211,7 @@ def downgrade() -> None:
         "provider_credentials",
         "audit_log_entries",
         "telemetry_events",
+        "telemetry_outbox_events",
         "jobs",
         "billing_ledger_entries",
         "provider_attempts",

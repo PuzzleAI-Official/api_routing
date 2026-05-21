@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from puzzle_gateway.circuit_breaker import CircuitBreaker
-from puzzle_gateway.jobs import InMemoryJobQueue, process_job_once, submit_job
+from puzzle_gateway.jobs import claim_next_queued_job, process_job_once, submit_job
 from puzzle_gateway.kv import InMemoryKVStore
-from puzzle_gateway.models import AuditLogEntry, ProviderAttempt, TelemetryEvent, Tenant
+from puzzle_gateway.models import (
+    AuditLogEntry,
+    ProviderAttempt,
+    TelemetryEvent,
+    TelemetryOutboxEvent,
+    Tenant,
+)
 from puzzle_gateway.routing import create_routing_decision
-from puzzle_gateway.telemetry import InMemoryTelemetryQueue, ingest_events
+from puzzle_gateway.telemetry import drain_telemetry_outbox, publish_telemetry_outbox
 from puzzle_gateway.vault import Vault
 from puzzle_shared import JobStatus, RoutingStrategy
 from sqlalchemy import func, select
@@ -21,7 +27,6 @@ def test_async_job_redelivery_completes_once(
 ) -> None:
     tenant, _api_key = seeded_tenant
     breaker = CircuitBreaker(InMemoryKVStore())
-    queue = InMemoryJobQueue()
     decision = create_routing_decision(
         session,
         tenant_id=tenant.id,
@@ -38,10 +43,11 @@ def test_async_job_redelivery_completes_once(
         request_id="req-job",
         decision=decision,
         payload={"job": True},
-        publisher=queue,
         idempotency_key="job-idem",
     )
-    assert queue.pop() == job.id
+    claimed = claim_next_queued_job(session)
+    assert claimed is not None
+    assert claimed.id == job.id
 
     first = process_job_once(session, job_id=job.id, circuit_breaker=breaker)
     second = process_job_once(session, job_id=job.id, circuit_breaker=breaker)
@@ -56,12 +62,17 @@ def test_telemetry_ingest_is_off_request_path(
     seeded_tenant: tuple[Tenant, str],
 ) -> None:
     tenant, _api_key = seeded_tenant
-    queue = InMemoryTelemetryQueue()
 
-    queue.publish("request.completed", tenant.id, {"request_id": "req-telemetry"})
+    publish_telemetry_outbox(
+        session,
+        event_type="request.completed",
+        tenant_id=tenant.id,
+        payload={"request_id": "req-telemetry"},
+    )
     assert session.scalar(select(func.count()).select_from(TelemetryEvent)) == 0
+    assert session.scalar(select(func.count()).select_from(TelemetryOutboxEvent)) == 1
 
-    count = ingest_events(session, queue)
+    count = drain_telemetry_outbox(session)
 
     assert count == 1
     assert session.scalar(select(func.count()).select_from(TelemetryEvent)) == 1

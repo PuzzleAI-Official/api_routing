@@ -3,12 +3,29 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from puzzle_shared import ApiError, ApiErrorCode, JobStatus
+from puzzle_shared import (
+    ApiError,
+    ApiErrorCode,
+    DocumentProcessRequest,
+    InvoiceExtractRequest,
+    JobStatus,
+)
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from puzzle_gateway.circuit_breaker import CircuitBreaker
+from puzzle_gateway.documents.execution import (
+    document_file_from_object,
+    execute_document_routing_decision,
+)
+from puzzle_gateway.documents.manifests import DOCUMENT_OPERATION
+from puzzle_gateway.documents.workflows import (
+    INVOICE_OPERATION,
+    execute_invoice_workflow_decision,
+)
 from puzzle_gateway.models import Job, RoutingDecision, now_utc
 from puzzle_gateway.providers import execute_routing_decision
+from puzzle_gateway.storage import get_object_store
 
 
 class JobPublisher(Protocol):
@@ -36,7 +53,7 @@ def submit_job(
     request_id: str,
     decision: RoutingDecision,
     payload: dict[str, Any],
-    publisher: JobPublisher,
+    publisher: JobPublisher | None = None,
     idempotency_key: str | None = None,
 ) -> Job:
     job = Job(
@@ -50,7 +67,21 @@ def submit_job(
     )
     session.add(job)
     session.flush()
-    publisher.publish_job(job.id)
+    if publisher is not None:
+        publisher.publish_job(job.id)
+    return job
+
+
+def claim_next_queued_job(session: Session) -> Job | None:
+    job = session.scalars(
+        select(Job).where(Job.status == JobStatus.QUEUED.value).order_by(Job.created_at).limit(1)
+    ).first()
+    if job is None:
+        return None
+    job.status = JobStatus.RUNNING.value
+    job.updated_at = now_utc()
+    session.add(job)
+    session.flush()
     return job
 
 
@@ -65,13 +96,11 @@ def process_job_once(
         raise ValueError(f"Job {job_id} does not exist")
     if job.status == JobStatus.SUCCEEDED.value:
         return job
-    if job.status == JobStatus.RUNNING.value:
-        return job
-
-    job.status = JobStatus.RUNNING.value
-    job.updated_at = now_utc()
-    session.add(job)
-    session.flush()
+    if job.status == JobStatus.QUEUED.value:
+        job.status = JobStatus.RUNNING.value
+        job.updated_at = now_utc()
+        session.add(job)
+        session.flush()
 
     decision = session.get(RoutingDecision, job.routing_decision_id)
     if decision is None:
@@ -86,6 +115,55 @@ def process_job_once(
         return job
 
     try:
+        if job.operation == DOCUMENT_OPERATION:
+            document_request = DocumentProcessRequest.model_validate(job.payload_json["request"])
+            document = document_file_from_object(
+                session,
+                document_id=str(job.payload_json["document_id"]),
+                object_store=get_object_store(),
+            )
+            document_result = execute_document_routing_decision(
+                session,
+                tenant_id=job.tenant_id,
+                document=document,
+                request=document_request,
+                decision=decision,
+                object_store=get_object_store(),
+                circuit_breaker=circuit_breaker,
+                idempotency_key=job.idempotency_key,
+                job_id=job.id,
+            )
+            job.status = JobStatus.SUCCEEDED.value
+            job.result_json = document_result.response.model_dump(mode="json")
+            job.updated_at = now_utc()
+            session.add(job)
+            session.flush()
+            return job
+        if job.operation == INVOICE_OPERATION:
+            invoice_request = InvoiceExtractRequest.model_validate(job.payload_json["request"])
+            object_store = get_object_store()
+            document = document_file_from_object(
+                session,
+                document_id=str(job.payload_json["document_id"]),
+                object_store=object_store,
+            )
+            invoice_result = execute_invoice_workflow_decision(
+                session,
+                tenant_id=job.tenant_id,
+                document=document,
+                request=invoice_request,
+                decision=decision,
+                object_store=object_store,
+                circuit_breaker=circuit_breaker,
+                idempotency_key=job.idempotency_key,
+                job_id=job.id,
+            )
+            job.status = JobStatus.SUCCEEDED.value
+            job.result_json = invoice_result.response.model_dump(mode="json")
+            job.updated_at = now_utc()
+            session.add(job)
+            session.flush()
+            return job
         result = execute_routing_decision(
             session,
             tenant_id=job.tenant_id,

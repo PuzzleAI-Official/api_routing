@@ -82,8 +82,8 @@ resource "google_pubsub_topic" "jobs" {
 }
 
 resource "google_pubsub_subscription" "jobs" {
-  name  = "${local.name_prefix}-jobs-worker"
-  topic = google_pubsub_topic.jobs.name
+  name                 = "${local.name_prefix}-jobs-worker"
+  topic                = google_pubsub_topic.jobs.name
   ack_deadline_seconds = 60
 }
 
@@ -93,8 +93,8 @@ resource "google_pubsub_topic" "telemetry" {
 }
 
 resource "google_pubsub_subscription" "telemetry" {
-  name  = "${local.name_prefix}-telemetry-ingest"
-  topic = google_pubsub_topic.telemetry.name
+  name                 = "${local.name_prefix}-telemetry-ingest"
+  topic                = google_pubsub_topic.telemetry.name
   ack_deadline_seconds = 30
 }
 

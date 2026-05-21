@@ -57,6 +57,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = "-q --cov=puzzle_shared --cov=puzzle_gateway --cov=puzzle --cov-report=term-missing --cov-fail-under=85"
 testpaths = ["tests"]
+markers = [
+  "live_provider: opt-in live document provider smoke tests",
+]
 pythonpath = [
   "packages/shared/src",
   "packages/puzzle/src",

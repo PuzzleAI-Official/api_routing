@@ -5,7 +5,7 @@ import time
 from puzzle_gateway.circuit_breaker import CircuitBreaker
 from puzzle_gateway.config import settings
 from puzzle_gateway.db import SessionLocal, create_all
-from puzzle_gateway.jobs import InMemoryJobQueue, process_job_once
+from puzzle_gateway.jobs import claim_next_queued_job, process_job_once
 from puzzle_gateway.kv import InMemoryKVStore
 
 
@@ -23,11 +23,12 @@ def run_once(job_id: str) -> None:
 
 def main() -> None:
     create_all()
-    queue = InMemoryJobQueue()
     while True:
-        job_id = queue.pop()
-        if job_id is not None:
-            run_once(job_id)
+        with SessionLocal() as session:
+            job = claim_next_queued_job(session)
+            session.commit()
+        if job is not None:
+            run_once(job.id)
         time.sleep(1)
 
 

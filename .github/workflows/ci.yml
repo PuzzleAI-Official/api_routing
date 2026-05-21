@@ -18,6 +18,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy packages services tests
       - run: uv run pytest
+      - run: uv run alembic -c services/gateway/alembic.ini upgrade head
       - run: uv run alembic -c services/gateway/alembic.ini check
       - run: docker build -f services/gateway/Dockerfile .
       - run: docker build -f services/worker/Dockerfile .

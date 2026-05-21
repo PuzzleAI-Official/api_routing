@@ -4,6 +4,7 @@ from collections.abc import Generator
 
 from fastapi.testclient import TestClient
 from puzzle_gateway.app import app as fastapi_app
+from puzzle_gateway.config import settings
 from puzzle_gateway.db import get_session
 from puzzle_gateway.models import Base
 from puzzle_gateway.seed import seed_default_tenant
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 HTTP_OK = 200
+HTTP_NOT_FOUND = 404
 
 
 def test_health_version_and_mock_run_endpoint() -> None:
@@ -55,6 +57,21 @@ def test_health_version_and_mock_run_endpoint() -> None:
         assert replay.json()["replayed"] is True
     finally:
         fastapi_app.dependency_overrides.clear()
+
+
+def test_admin_endpoint_can_be_disabled() -> None:
+    original = settings.admin_api_enabled
+    object.__setattr__(settings, "admin_api_enabled", False)
+    client = TestClient(fastapi_app)
+    try:
+        response = client.post(
+            "/v1/admin/tenants",
+            headers={"X-Admin-Token": "local-admin-token"},
+            json={"name": "disabled"},
+        )
+        assert response.status_code == HTTP_NOT_FOUND
+    finally:
+        object.__setattr__(settings, "admin_api_enabled", original)
 
 
 def test_admin_endpoints_create_core_seed_data() -> None:
