@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from puzzle._types import ApiErrorCode
+from puzzleai._types import ApiErrorCode
 
 
 class PuzzleError(Exception):

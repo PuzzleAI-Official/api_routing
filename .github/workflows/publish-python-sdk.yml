@@ -25,12 +25,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: astral-sh/setup-uv@v5
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      - name: Sync workspace
+        run: uv sync --all-packages --dev --locked
+
+      - name: Run lint
+        run: uv run ruff check .
+
+      - name: Run typecheck
+        run: uv run mypy packages services tests
+
+      - name: Run tests
+        run: uv run pytest
+
       - name: Install build tools
         run: python -m pip install --upgrade build twine
+
+      - name: Clean previous package artifacts
+        run: rm -rf packages/puzzle/dist
 
       - name: Build wheel only
         run: python -m build --wheel packages/puzzle
@@ -50,11 +67,11 @@ jobs:
               raise SystemExit(f"expected exactly one wheel, found {wheels}")
 
           allowed_exact = {
-              "puzzle/__init__.py",
-              "puzzle/_client.py",
-              "puzzle/_exceptions.py",
-              "puzzle/_types.py",
-              "puzzle/py.typed",
+              "puzzleai/__init__.py",
+              "puzzleai/_client.py",
+              "puzzleai/_exceptions.py",
+              "puzzleai/_types.py",
+              "puzzleai/py.typed",
           }
           allowed_prefixes = ("puzzleai-",)
           names = zipfile.ZipFile(wheels[0]).namelist()
@@ -63,6 +80,7 @@ jobs:
               if name not in allowed_exact and not name.startswith(allowed_prefixes)
           ]
           forbidden_fragments = (
+              "puzzle/",
               "puzzle_gateway",
               "puzzle_worker",
               "puzzle_telemetry",

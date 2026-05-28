@@ -4,7 +4,12 @@ import io
 
 import httpx
 import pytest
-from puzzle import AsyncClient, Client, PuzzleAuthenticationError, PuzzleDependencyUnavailableError
+from puzzleai import (
+    AsyncClient,
+    Client,
+    PuzzleAuthenticationError,
+    PuzzleDependencyUnavailableError,
+)
 
 EXPECTED_RETRY_CALLS = 2
 

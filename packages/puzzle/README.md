@@ -11,7 +11,7 @@ pip install puzzleai
 Use:
 
 ```python
-from puzzle import Client
+from puzzleai import Client
 
 client = Client(api_key="YOUR_API_KEY", base_url="YOUR_ALPHA_BASE_URL")
 
@@ -25,6 +25,6 @@ with open("invoice.pdf", "rb") as file:
 print(result["request_id"])
 ```
 
-The package name is `puzzleai`; the import name is `puzzle`.
+The package name and import name are both `puzzleai`.
 
 During alpha, pass your assigned `base_url` explicitly or set `PUZZLE_BASE_URL`.

@@ -364,8 +364,11 @@ def test_data_deletion_redacts_content_and_preserves_billing(
     assert idempotency.response_json is not None
     assert idempotency.response_json["redacted"] is True
     assert job.payload_json["redacted"] is True
-    assert session.scalar(select(func.count()).select_from(BillingLedgerEntry)) == 1
-    assert session.scalar(select(func.count()).select_from(AuditLogEntry)) >= 1
+    billing_count = session.scalar(select(func.count()).select_from(BillingLedgerEntry))
+    audit_count = session.scalar(select(func.count()).select_from(AuditLogEntry))
+    assert billing_count == 1
+    assert audit_count is not None
+    assert audit_count >= 1
 
 
 def test_data_deletion_by_request_id_redacts_related_rows(

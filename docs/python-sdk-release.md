@@ -11,7 +11,7 @@ pip install puzzleai
 Users import:
 
 ```python
-from puzzle import Client
+from puzzleai import Client
 ```
 
 ## What Gets Published
@@ -21,11 +21,11 @@ The release workflow builds a wheel only from `packages/puzzle`.
 Allowed wheel contents:
 
 ```text
-puzzle/__init__.py
-puzzle/_client.py
-puzzle/_exceptions.py
-puzzle/_types.py
-puzzle/py.typed
+puzzleai/__init__.py
+puzzleai/_client.py
+puzzleai/_exceptions.py
+puzzleai/_types.py
+puzzleai/py.typed
 puzzleai-*.dist-info/*
 ```
 
@@ -55,8 +55,8 @@ From the repository root:
 
 ```bash
 python -m pytest tests/test_sdk_client.py -q --no-cov
-python -m mypy packages/puzzle/src/puzzle tests/test_sdk_client.py
-python -m ruff check packages/puzzle/src/puzzle tests/test_sdk_client.py
+python -m mypy packages/puzzle/src/puzzleai tests/test_sdk_client.py
+python -m ruff check packages/puzzle/src/puzzleai tests/test_sdk_client.py
 ```
 
 Build the wheel:

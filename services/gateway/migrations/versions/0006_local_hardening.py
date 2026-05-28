@@ -6,6 +6,8 @@ Create Date: 2026-05-21
 """
 from __future__ import annotations
 
+from typing import Any
+
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.engine import Connection
@@ -32,7 +34,7 @@ def _index_names(bind: Connection, table_name: str) -> set[str]:
     return {str(index["name"]) for index in sa.inspect(bind).get_indexes(table_name)}
 
 
-def _add_column_if_missing(bind: Connection, table_name: str, column: sa.Column) -> None:
+def _add_column_if_missing(bind: Connection, table_name: str, column: sa.Column[Any]) -> None:
     if column.name not in _column_names(bind, table_name):
         op.add_column(table_name, column)
 

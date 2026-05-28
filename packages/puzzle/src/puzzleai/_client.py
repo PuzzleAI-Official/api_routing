@@ -10,8 +10,8 @@ from typing import Any, BinaryIO, cast
 
 import httpx
 
-from puzzle._exceptions import ERROR_CLASS_BY_CODE, PuzzleError, PuzzleTransportError
-from puzzle._types import ApiErrorCode, RoutingStrategy
+from puzzleai._exceptions import ERROR_CLASS_BY_CODE, PuzzleError, PuzzleTransportError
+from puzzleai._types import ApiErrorCode, RoutingStrategy
 
 SUCCESS_STATUS_CEILING = 400
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})

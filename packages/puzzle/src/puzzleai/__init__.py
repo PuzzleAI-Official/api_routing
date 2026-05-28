@@ -1,6 +1,7 @@
-from puzzle._client import AsyncClient, Client
-from puzzle._exceptions import (
+from puzzleai._client import AsyncClient, Client
+from puzzleai._exceptions import (
     PuzzleAuthenticationError,
+    PuzzleAuthorizationError,
     PuzzleDependencyUnavailableError,
     PuzzleError,
     PuzzleIdempotencyConflictError,
@@ -11,13 +12,14 @@ from puzzle._exceptions import (
     PuzzleTransportError,
     PuzzleValidationError,
 )
-from puzzle._types import ApiErrorCode, RoutingStrategy
+from puzzleai._types import ApiErrorCode, RoutingStrategy
 
 __all__ = [
     "ApiErrorCode",
     "AsyncClient",
     "Client",
     "PuzzleAuthenticationError",
+    "PuzzleAuthorizationError",
     "PuzzleDependencyUnavailableError",
     "PuzzleError",
     "PuzzleIdempotencyConflictError",
