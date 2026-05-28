@@ -254,6 +254,51 @@ def test_invoice_workflow_priors_are_seeded_and_can_deactivate_service(
     } >= {"workflow_inactive"}
 
 
+def test_invoice_routing_records_invoice_circuit_open_skip(
+    session: Session,
+) -> None:
+    tenant = create_tenant(session, name="invoice-circuit-tenant")
+    primary = fake_document_provider_spec(
+        provider_id="fake-doc-circuit-primary",
+        behavior="invoice",
+        quality_score=99,
+    )
+    secondary = fake_document_provider_spec(
+        provider_id="fake-doc-circuit-secondary",
+        behavior="invoice",
+        quality_score=70,
+    )
+    for spec in [primary, secondary]:
+        upsert_provider_service_manifest(session, tenant_id=tenant.id, spec=spec)
+    create_documents_provider_set(session, tenant_id=tenant.id, specs=[primary, secondary])
+    breaker = CircuitBreaker(InMemoryKVStore())
+    for _ in range(3):
+        breaker.record_failure(
+            tenant.id,
+            "fake-doc-circuit-primary:parse",
+            INVOICE_OPERATION,
+        )
+
+    decision = create_invoice_routing_decision(
+        session,
+        tenant_id=tenant.id,
+        request=InvoiceExtractRequest(provider_set="documents-default"),
+        request_id="invoice-circuit",
+        mime_type="application/pdf",
+        byte_size=100,
+        circuit_breaker=breaker,
+        sync=True,
+    )
+
+    assert decision.decision_json["ordered_provider_services"] == [
+        {"provider_id": "fake-doc-circuit-secondary", "service_id": "parse"}
+    ]
+    assert {
+        (item["provider_id"], item["reason"])
+        for item in decision.decision_json["skipped_provider_services"]
+    } >= {("fake-doc-circuit-primary", "circuit_open")}
+
+
 def test_workflow_provider_service_status_shows_invoice_eligibility(
     session: Session,
 ) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -84,6 +85,7 @@ def create_document_routing_decision(  # noqa: PLR0912, PLR0915
     circuit_breaker: CircuitBreaker,
     sync: bool,
 ) -> RoutingDecision:
+    started_at = perf_counter()
     resolved_request_id = request_id or str(uuid4())
     provider_set = get_provider_set(session, tenant_id=tenant_id, name=request.provider_set)
     manifests = session.scalars(
@@ -257,6 +259,9 @@ def create_document_routing_decision(  # noqa: PLR0912, PLR0915
     decision_json["service_manifests"] = {
         f"{candidate.provider_id}:{candidate.service_id}": candidate.manifest
         for candidate, _score_value, _reason in scored
+    }
+    decision_json["metrics"] = {
+        "routing_overhead_ms": round((perf_counter() - started_at) * 1000, 3)
     }
     row = RoutingDecision(
         tenant_id=tenant_id,

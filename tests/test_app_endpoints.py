@@ -36,6 +36,8 @@ def test_health_version_and_mock_run_endpoint() -> None:
     try:
         client = TestClient(fastapi_app)
         assert client.get("/healthz").json() == {"status": "ok"}
+        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/ready").json() == {"status": "ready"}
         assert "version" in client.get("/version").json()
 
         response = client.post(

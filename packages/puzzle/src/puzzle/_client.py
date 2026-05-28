@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 import httpx
-from puzzle_shared import ApiErrorCode, RoutingStrategy
 
-from puzzle._exceptions import ERROR_CLASS_BY_CODE, PuzzleError
+from puzzle._exceptions import ERROR_CLASS_BY_CODE, PuzzleError, PuzzleTransportError
+from puzzle._types import ApiErrorCode, RoutingStrategy
 
 SUCCESS_STATUS_CEILING = 400
-FileInput = str | Path | bytes
+RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+DEFAULT_BASE_URL = "https://api.puzzleai.us"
+FileInput = str | Path | bytes | BinaryIO
 
 
 class _ClientMixin:
@@ -21,10 +26,15 @@ class _ClientMixin:
         *,
         base_url: str | None = None,
         timeout: float | httpx.Timeout | None = None,
+        max_retries: int = 2,
+        retry_backoff: float = 0.25,
     ) -> None:
         self.api_key = api_key
-        self.base_url = (base_url or "http://localhost:8000").rstrip("/")
+        configured_base_url = base_url or os.getenv("PUZZLE_BASE_URL") or DEFAULT_BASE_URL
+        self.base_url = configured_base_url.rstrip("/")
         self.timeout = timeout or 30.0
+        self.max_retries: int = max_retries if max_retries > 0 else 0
+        self.retry_backoff: float = retry_backoff if retry_backoff > 0.0 else 0.0
 
     def _headers(self, idempotency_key: str | None) -> dict[str, str]:
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -57,6 +67,25 @@ class _ClientMixin:
             details=error.get("details", {}),
         )
 
+    def _can_retry(self, method: str, headers: Mapping[str, str]) -> bool:
+        return method.upper() == "GET" or bool(headers.get("Idempotency-Key"))
+
+    def _retry_delay(self, response: httpx.Response | None, attempt: int) -> float:
+        retry_after = response.headers.get("Retry-After") if response is not None else None
+        if retry_after is not None:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                return float(self.retry_backoff * (2**attempt))
+        return float(self.retry_backoff * (2**attempt))
+
+    def _raise_transport_error(self, exc: httpx.RequestError) -> None:
+        raise PuzzleTransportError(
+            "Puzzle API request failed before receiving a response",
+            code=ApiErrorCode.INTERNAL_ERROR,
+            details={"error": exc.__class__.__name__},
+        ) from exc
+
 
 class Client(_ClientMixin):
     def __init__(
@@ -65,9 +94,18 @@ class Client(_ClientMixin):
         *,
         base_url: str | None = None,
         timeout: float | httpx.Timeout | None = None,
+        max_retries: int = 2,
+        retry_backoff: float = 0.25,
     ) -> None:
-        super().__init__(api_key, base_url=base_url, timeout=timeout)
+        super().__init__(
+            api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+        )
         self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout)
+        self.jobs = JobsClient(self)
         self.documents = DocumentsClient(self)
 
     def close(self) -> None:
@@ -95,13 +133,57 @@ class Client(_ClientMixin):
             "provider": provider,
             "idempotency_key": idempotency_key,
         }
-        response = self._client.post(path, json=body, headers=self._headers(idempotency_key))
+        response = self._request_with_retries(
+            "POST",
+            path,
+            json=body,
+            headers=self._headers(idempotency_key),
+        )
         self._raise_for_error(response)
         return cast(dict[str, Any], response.json())
 
     def get_job(self, job_id: str) -> dict[str, Any]:
-        response = self._client.get(f"/v1/jobs/{job_id}", headers=self._headers(None))
-        self._raise_for_error(response)
+        return self.jobs.get(job_id)
+
+    def _request_with_retries(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str],
+        **kwargs: Any,
+    ) -> httpx.Response:
+        can_retry = self._can_retry(method, headers)
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self._client.request(method, path, headers=headers, **kwargs)
+            except httpx.RequestError as exc:
+                if not can_retry or attempt >= self.max_retries:
+                    self._raise_transport_error(exc)
+                time.sleep(self._retry_delay(None, attempt))
+                continue
+            if (
+                not can_retry
+                or response.status_code not in RETRYABLE_STATUS_CODES
+                or attempt >= self.max_retries
+            ):
+                return response
+            time.sleep(self._retry_delay(response, attempt))
+        msg = "Puzzle API request retry loop exited unexpectedly"
+        raise PuzzleTransportError(msg, code=ApiErrorCode.INTERNAL_ERROR)
+
+
+class JobsClient:
+    def __init__(self, parent: Client) -> None:
+        self._parent = parent
+
+    def get(self, job_id: str) -> dict[str, Any]:
+        response = self._parent._request_with_retries(
+            "GET",
+            f"/v1/jobs/{job_id}",
+            headers=self._parent._headers(None),
+        )
+        self._parent._raise_for_error(response)
         return cast(dict[str, Any], response.json())
 
 
@@ -112,9 +194,18 @@ class AsyncClient(_ClientMixin):
         *,
         base_url: str | None = None,
         timeout: float | httpx.Timeout | None = None,
+        max_retries: int = 2,
+        retry_backoff: float = 0.25,
     ) -> None:
-        super().__init__(api_key, base_url=base_url, timeout=timeout)
+        super().__init__(
+            api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+        )
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
+        self.jobs = AsyncJobsClient(self)
         self.documents = AsyncDocumentsClient(self)
 
     async def aclose(self) -> None:
@@ -142,13 +233,57 @@ class AsyncClient(_ClientMixin):
             "provider": provider,
             "idempotency_key": idempotency_key,
         }
-        response = await self._client.post(path, json=body, headers=self._headers(idempotency_key))
+        response = await self._request_with_retries(
+            "POST",
+            path,
+            json=body,
+            headers=self._headers(idempotency_key),
+        )
         self._raise_for_error(response)
         return cast(dict[str, Any], response.json())
 
     async def get_job(self, job_id: str) -> dict[str, Any]:
-        response = await self._client.get(f"/v1/jobs/{job_id}", headers=self._headers(None))
-        self._raise_for_error(response)
+        return await self.jobs.get(job_id)
+
+    async def _request_with_retries(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str],
+        **kwargs: Any,
+    ) -> httpx.Response:
+        can_retry = self._can_retry(method, headers)
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await self._client.request(method, path, headers=headers, **kwargs)
+            except httpx.RequestError as exc:
+                if not can_retry or attempt >= self.max_retries:
+                    self._raise_transport_error(exc)
+                await asyncio.sleep(self._retry_delay(None, attempt))
+                continue
+            if (
+                not can_retry
+                or response.status_code not in RETRYABLE_STATUS_CODES
+                or attempt >= self.max_retries
+            ):
+                return response
+            await asyncio.sleep(self._retry_delay(response, attempt))
+        msg = "Puzzle API request retry loop exited unexpectedly"
+        raise PuzzleTransportError(msg, code=ApiErrorCode.INTERNAL_ERROR)
+
+
+class AsyncJobsClient:
+    def __init__(self, parent: AsyncClient) -> None:
+        self._parent = parent
+
+    async def get(self, job_id: str) -> dict[str, Any]:
+        response = await self._parent._request_with_retries(
+            "GET",
+            f"/v1/jobs/{job_id}",
+            headers=self._parent._headers(None),
+        )
+        self._parent._raise_for_error(response)
         return cast(dict[str, Any], response.json())
 
 
@@ -160,8 +295,11 @@ def _file_parts(
 ) -> tuple[str, bytes, str]:
     if isinstance(file, bytes):
         return filename or "document", file, content_type
-    path = Path(file)
-    return filename or path.name, path.read_bytes(), content_type
+    if isinstance(file, str | Path):
+        path = Path(file)
+        return filename or path.name, path.read_bytes(), content_type
+    upload_name = filename or Path(getattr(file, "name", "document")).name
+    return upload_name, file.read(), content_type
 
 
 def _document_metadata(
@@ -244,7 +382,8 @@ class InvoicesClient:
             filename=filename,
             content_type=content_type,
         )
-        response = self._parent._client.post(
+        response = self._parent._request_with_retries(
+            "POST",
             "/v1/documents/invoices:extract",
             data={
                 "metadata": _invoice_metadata(
@@ -286,7 +425,8 @@ class InvoicesClient:
             filename=filename,
             content_type=content_type,
         )
-        response = self._parent._client.post(
+        response = self._parent._request_with_retries(
+            "POST",
             "/v1/documents/invoices:submit",
             data={
                 "metadata": _invoice_metadata(
@@ -334,7 +474,8 @@ class DocumentsClient:
             filename=filename,
             content_type=content_type,
         )
-        response = self._parent._client.post(
+        response = self._parent._request_with_retries(
+            "POST",
             "/v1/documents:process",
             data={
                 "metadata": _document_metadata(
@@ -376,7 +517,8 @@ class DocumentsClient:
             filename=filename,
             content_type=content_type,
         )
-        response = self._parent._client.post(
+        response = self._parent._request_with_retries(
+            "POST",
             "/v1/documents:submit",
             data={
                 "metadata": _document_metadata(
@@ -423,7 +565,8 @@ class AsyncInvoicesClient:
             filename=filename,
             content_type=content_type,
         )
-        response = await self._parent._client.post(
+        response = await self._parent._request_with_retries(
+            "POST",
             "/v1/documents/invoices:extract",
             data={
                 "metadata": _invoice_metadata(
@@ -465,7 +608,8 @@ class AsyncInvoicesClient:
             filename=filename,
             content_type=content_type,
         )
-        response = await self._parent._client.post(
+        response = await self._parent._request_with_retries(
+            "POST",
             "/v1/documents/invoices:submit",
             data={
                 "metadata": _invoice_metadata(
@@ -513,7 +657,8 @@ class AsyncDocumentsClient:
             filename=filename,
             content_type=content_type,
         )
-        response = await self._parent._client.post(
+        response = await self._parent._request_with_retries(
+            "POST",
             "/v1/documents:process",
             data={
                 "metadata": _document_metadata(
@@ -555,7 +700,8 @@ class AsyncDocumentsClient:
             filename=filename,
             content_type=content_type,
         )
-        response = await self._parent._client.post(
+        response = await self._parent._request_with_retries(
+            "POST",
             "/v1/documents:submit",
             data={
                 "metadata": _document_metadata(

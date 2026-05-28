@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, Protocol
 
 from puzzle_shared import (
@@ -10,10 +11,11 @@ from puzzle_shared import (
     InvoiceExtractRequest,
     JobStatus,
 )
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from puzzle_gateway.circuit_breaker import CircuitBreaker
+from puzzle_gateway.config import settings
 from puzzle_gateway.documents.execution import (
     document_file_from_object,
     execute_document_routing_decision,
@@ -23,6 +25,7 @@ from puzzle_gateway.documents.workflows import (
     INVOICE_OPERATION,
     execute_invoice_workflow_decision,
 )
+from puzzle_gateway.errors import DependencyUnavailableError
 from puzzle_gateway.models import Job, RoutingDecision, now_utc
 from puzzle_gateway.providers import execute_routing_decision
 from puzzle_gateway.storage import get_object_store
@@ -73,16 +76,118 @@ def submit_job(
 
 
 def claim_next_queued_job(session: Session) -> Job | None:
-    job = session.scalars(
-        select(Job).where(Job.status == JobStatus.QUEUED.value).order_by(Job.created_at).limit(1)
-    ).first()
+    now = now_utc()
+    stale_before = now - timedelta(seconds=settings.job_stale_lock_seconds)
+    expired_jobs = list(
+        session.scalars(
+            select(Job).where(
+                Job.status == JobStatus.RUNNING.value,
+                Job.locked_at.is_not(None),
+                Job.locked_at <= stale_before,
+                Job.attempt_count >= settings.job_max_attempts,
+            )
+        )
+    )
+    for expired_job in expired_jobs:
+        _fail_job(
+            expired_job,
+            code=ApiErrorCode.INTERNAL_ERROR,
+            message="Job exceeded maximum retry attempts",
+        )
+        session.add(expired_job)
+    if expired_jobs:
+        session.flush()
+
+    eligible = or_(
+        and_(
+            Job.status == JobStatus.QUEUED.value,
+            or_(Job.next_run_at.is_(None), Job.next_run_at <= now),
+        ),
+        and_(
+            Job.status == JobStatus.RUNNING.value,
+            Job.locked_at.is_not(None),
+            Job.locked_at <= stale_before,
+        ),
+    )
+    statement = (
+        select(Job)
+        .where(eligible, Job.attempt_count < settings.job_max_attempts)
+        .order_by(Job.created_at)
+        .limit(1)
+    )
+    bind = session.get_bind()
+    if bind.dialect.name != "sqlite":
+        statement = statement.with_for_update(skip_locked=True)
+    job = session.scalars(statement).first()
     if job is None:
         return None
     job.status = JobStatus.RUNNING.value
+    job.attempt_count += 1
+    job.locked_at = now
+    job.next_run_at = None
     job.updated_at = now_utc()
     session.add(job)
     session.flush()
     return job
+
+
+def _mark_running(session: Session, job: Job) -> None:
+    if job.status == JobStatus.QUEUED.value:
+        job.attempt_count += 1
+        job.locked_at = now_utc()
+    elif job.locked_at is None:
+        job.locked_at = now_utc()
+    job.status = JobStatus.RUNNING.value
+    job.updated_at = now_utc()
+    session.add(job)
+    session.flush()
+
+
+def _succeed_job(job: Job, result_json: dict[str, Any]) -> None:
+    job.status = JobStatus.SUCCEEDED.value
+    job.result_json = result_json
+    job.error_json = None
+    job.locked_at = None
+    job.next_run_at = None
+    job.updated_at = now_utc()
+
+
+def _fail_job(
+    job: Job,
+    *,
+    code: ApiErrorCode,
+    message: str,
+) -> None:
+    error_json = ApiError(
+        code=code,
+        message=message,
+        request_id=job.request_id,
+    ).model_dump(mode="json")
+    job.status = JobStatus.FAILED.value
+    job.error_json = error_json
+    job.last_error_json = error_json
+    job.locked_at = None
+    job.next_run_at = None
+    job.updated_at = now_utc()
+
+
+def _requeue_dependency_failure(job: Job, exc: DependencyUnavailableError) -> None:
+    error_json = ApiError(
+        code=ApiErrorCode.DEPENDENCY_UNAVAILABLE,
+        message=exc.message,
+        request_id=job.request_id,
+    ).model_dump(mode="json")
+    job.last_error_json = error_json
+    job.locked_at = None
+    job.updated_at = now_utc()
+    if job.attempt_count >= settings.job_max_attempts:
+        job.status = JobStatus.FAILED.value
+        job.error_json = error_json
+        job.next_run_at = None
+        return
+    job.status = JobStatus.QUEUED.value
+    job.error_json = None
+    job.next_run_at = now_utc() + timedelta(seconds=settings.job_retry_delay_seconds)
 
 
 def process_job_once(
@@ -94,22 +199,21 @@ def process_job_once(
     job = session.get(Job, job_id)
     if job is None:
         raise ValueError(f"Job {job_id} does not exist")
-    if job.status == JobStatus.SUCCEEDED.value:
+    if job.status in {
+        JobStatus.SUCCEEDED.value,
+        JobStatus.FAILED.value,
+        JobStatus.CANCELLED.value,
+    }:
         return job
-    if job.status == JobStatus.QUEUED.value:
-        job.status = JobStatus.RUNNING.value
-        job.updated_at = now_utc()
-        session.add(job)
-        session.flush()
+    _mark_running(session, job)
 
     decision = session.get(RoutingDecision, job.routing_decision_id)
     if decision is None:
-        job.status = JobStatus.FAILED.value
-        job.error_json = ApiError(
+        _fail_job(
+            job,
             code=ApiErrorCode.INTERNAL_ERROR,
             message="Routing decision is missing",
-            request_id=job.request_id,
-        ).model_dump(mode="json")
+        )
         session.add(job)
         session.flush()
         return job
@@ -133,9 +237,7 @@ def process_job_once(
                 idempotency_key=job.idempotency_key,
                 job_id=job.id,
             )
-            job.status = JobStatus.SUCCEEDED.value
-            job.result_json = document_result.response.model_dump(mode="json")
-            job.updated_at = now_utc()
+            _succeed_job(job, document_result.response.model_dump(mode="json"))
             session.add(job)
             session.flush()
             return job
@@ -158,9 +260,7 @@ def process_job_once(
                 idempotency_key=job.idempotency_key,
                 job_id=job.id,
             )
-            job.status = JobStatus.SUCCEEDED.value
-            job.result_json = invoice_result.response.model_dump(mode="json")
-            job.updated_at = now_utc()
+            _succeed_job(job, invoice_result.response.model_dump(mode="json"))
             session.add(job)
             session.flush()
             return job
@@ -174,21 +274,23 @@ def process_job_once(
             idempotency_key=job.idempotency_key,
             job_id=job.id,
         )
+    except DependencyUnavailableError as exc:
+        _requeue_dependency_failure(job, exc)
     except Exception as exc:  # noqa: BLE001 - persisted job failure boundary
-        job.status = JobStatus.FAILED.value
-        job.error_json = ApiError(
+        _fail_job(
+            job,
             code=ApiErrorCode.PROVIDER_UNAVAILABLE,
             message=str(exc),
-            request_id=job.request_id,
-        ).model_dump(mode="json")
+        )
     else:
-        job.status = JobStatus.SUCCEEDED.value
-        job.result_json = {
-            "result": result.result,
-            "attempted_providers": result.attempted_providers,
-            "usage": result.usage.model_dump(mode="json"),
-        }
-    job.updated_at = now_utc()
+        _succeed_job(
+            job,
+            {
+                "result": result.result,
+                "attempted_providers": result.attempted_providers,
+                "usage": result.usage.model_dump(mode="json"),
+            },
+        )
     session.add(job)
     session.flush()
     return job

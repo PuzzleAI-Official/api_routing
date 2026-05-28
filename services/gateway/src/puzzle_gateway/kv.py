@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, cast
+
+import redis
+from redis.exceptions import RedisError
+
+from puzzle_gateway.config import settings
+from puzzle_gateway.errors import DependencyUnavailableError
 
 
 class KVStore(Protocol):
@@ -48,3 +54,42 @@ class InMemoryKVStore:
 
     def clear(self) -> None:
         self._values.clear()
+
+
+class RedisKVStore:
+    def __init__(self, url: str) -> None:
+        self._client = redis.Redis.from_url(url, decode_responses=True)
+
+    def get(self, key: str) -> str | None:
+        try:
+            value = self._client.get(key)
+        except RedisError as exc:
+            raise DependencyUnavailableError("Redis is unavailable") from exc
+        return str(value) if value is not None else None
+
+    def set(self, key: str, value: str, *, ex: int | None = None) -> None:
+        try:
+            self._client.set(key, value, ex=ex)
+        except RedisError as exc:
+            raise DependencyUnavailableError("Redis is unavailable") from exc
+
+    def delete(self, key: str) -> None:
+        try:
+            self._client.delete(key)
+        except RedisError as exc:
+            raise DependencyUnavailableError("Redis is unavailable") from exc
+
+    def incr(self, key: str, *, ex: int | None = None) -> int:
+        try:
+            value = int(cast(Any, self._client.incr(key)))
+            if ex is not None:
+                self._client.expire(key, ex)
+        except RedisError as exc:
+            raise DependencyUnavailableError("Redis is unavailable") from exc
+        return value
+
+
+def get_kv_store() -> KVStore:
+    if settings.redis_url:
+        return RedisKVStore(settings.redis_url)
+    return InMemoryKVStore()

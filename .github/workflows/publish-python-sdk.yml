@@ -1,0 +1,100 @@
+name: Publish PuzzleAI Python SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Package index to publish to"
+        required: true
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build wheel only
+        run: python -m build --wheel packages/puzzle
+
+      - name: Check package metadata
+        run: python -m twine check packages/puzzle/dist/*
+
+      - name: Verify wheel contains only public SDK files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+          import zipfile
+
+          wheels = list(Path("packages/puzzle/dist").glob("puzzleai-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, found {wheels}")
+
+          allowed_exact = {
+              "puzzle/__init__.py",
+              "puzzle/_client.py",
+              "puzzle/_exceptions.py",
+              "puzzle/_types.py",
+              "puzzle/py.typed",
+          }
+          allowed_prefixes = ("puzzleai-",)
+          names = zipfile.ZipFile(wheels[0]).namelist()
+          unexpected = [
+              name for name in names
+              if name not in allowed_exact and not name.startswith(allowed_prefixes)
+          ]
+          forbidden_fragments = (
+              "puzzle_gateway",
+              "puzzle_worker",
+              "puzzle_telemetry",
+              "services/",
+              "infra/",
+              "scripts/",
+              "tests/",
+              "provider_registry",
+              ".env",
+          )
+          forbidden = [
+              name for name in names
+              if any(fragment in name for fragment in forbidden_fragments)
+          ]
+          if unexpected or forbidden:
+              print("Wheel contents:")
+              print("\n".join(names))
+              raise SystemExit(
+                  f"unexpected={unexpected}; forbidden={forbidden}"
+              )
+          print("\n".join(names))
+          PY
+
+      - name: Publish to TestPyPI
+        if: inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/puzzle/dist
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/puzzle/dist

@@ -302,6 +302,12 @@ class FakeDocumentAdapter(BaseDocumentAdapter):
                 "Fake document provider permanent failure",
                 error_code="permanent_failure",
             )
+        if behavior == "malformed_response":
+            raise DocumentProviderError(
+                "Fake document provider malformed response",
+                error_code="malformed_response",
+                retryable=True,
+            )
         if behavior in {"invoice", "invoice_missing_total"}:
             text = (
                 "Acme Supplies invoice INV-1001 issued 2026-05-01. "

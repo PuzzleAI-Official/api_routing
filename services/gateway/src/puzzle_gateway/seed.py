@@ -1,10 +1,22 @@
 from __future__ import annotations
 
-from puzzle_shared import CredentialMode, MockProviderBehavior, ProviderSetSpec
+from puzzle_shared import (
+    CredentialMode,
+    MockProviderBehavior,
+    ProviderSetSpec,
+    ProviderValidationStatus,
+    WorkflowProviderPriorSpec,
+)
 from puzzle_shared.schemas import ProviderSpec, ShadowPolicy
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from puzzle_gateway.documents.manifests import (
+    create_documents_provider_set,
+    fake_document_provider_spec,
+    upsert_provider_service_manifest,
+)
+from puzzle_gateway.documents.workflow_priors import upsert_workflow_prior
 from puzzle_gateway.models import ApiKey, MockProviderConfig, Tenant
 from puzzle_gateway.provider_sets import upsert_provider_set
 from puzzle_gateway.security import api_key_prefix, create_salt, generate_api_key, hash_api_key
@@ -102,4 +114,91 @@ def seed_default_tenant(session: Session, *, name: str = "local-dev") -> tuple[T
         cost_units=8,
         latency_ms=150,
     )
+    return tenant, raw_key
+
+
+def seed_phase4b_staging_tenant(
+    session: Session,
+    *,
+    name: str = "phase4b-staging",
+    region: str = "us-east4",
+) -> tuple[Tenant, str]:
+    tenant = create_tenant(session, name=name, region=region)
+    tenant.monthly_quota_units = 10_000_000
+    _api_key, raw_key = create_api_key(session, tenant_id=tenant.id)
+    create_default_provider_set(session, tenant_id=tenant.id)
+    upsert_mock_provider(
+        session,
+        tenant_id=tenant.id,
+        provider="mock-primary",
+        behavior=MockProviderBehavior.SUCCESS,
+        quality_score=95,
+        cost_units=20,
+        latency_ms=25,
+    )
+    upsert_mock_provider(
+        session,
+        tenant_id=tenant.id,
+        provider="mock-secondary",
+        behavior=MockProviderBehavior.SUCCESS,
+        quality_score=80,
+        cost_units=8,
+        latency_ms=25,
+    )
+    configured_specs = [
+        fake_document_provider_spec(
+            provider_id="fake-doc-primary",
+            behavior="success",
+            cost_units=5,
+            quality_score=80,
+        ),
+        fake_document_provider_spec(
+            provider_id="fake-doc-secondary",
+            behavior="success",
+            cost_units=7,
+            quality_score=75,
+        ),
+        fake_document_provider_spec(
+            provider_id="fake-doc-invoice-primary",
+            behavior="invoice",
+            cost_units=6,
+            quality_score=92,
+        ),
+        fake_document_provider_spec(
+            provider_id="fake-doc-invoice-secondary",
+            behavior="invoice",
+            cost_units=8,
+            quality_score=88,
+        ),
+    ]
+    document_specs = [
+        spec.model_copy(
+            update={
+                "verified_capabilities": spec.capabilities,
+                "capability_status": {capability: "verified" for capability in spec.capabilities},
+                "readiness_status": "verified",
+                "validation_status": ProviderValidationStatus.SUCCEEDED.value,
+            }
+        )
+        for spec in configured_specs
+    ]
+    for spec in document_specs:
+        upsert_provider_service_manifest(session, tenant_id=tenant.id, spec=spec)
+    create_documents_provider_set(session, tenant_id=tenant.id, specs=document_specs)
+    for spec, priority, quality in (
+        (document_specs[2], 1, 0.92),
+        (document_specs[3], 2, 0.88),
+    ):
+        upsert_workflow_prior(
+            session,
+            tenant_id=tenant.id,
+            spec=WorkflowProviderPriorSpec(
+                provider_id=spec.provider_id,
+                service_id=spec.service_id,
+                active=True,
+                quality_prior=quality,
+                fallback_priority=priority,
+                notes="Phase 4B staging fake invoice prior.",
+            ),
+        )
     return tenant, raw_key

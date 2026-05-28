@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from time import perf_counter
 from typing import Any
 
 from puzzle_shared import (
@@ -216,6 +217,7 @@ def create_invoice_routing_decision(
     circuit_breaker: CircuitBreaker,
     sync: bool,
 ) -> RoutingDecision:
+    started_at = perf_counter()
     document_request = invoice_document_request(request)
     decision = create_document_routing_decision(
         session,
@@ -236,6 +238,19 @@ def create_invoice_routing_decision(
     for item in ordered:
         provider_id = str(item["provider_id"])
         service_id = str(item["service_id"])
+        if not circuit_breaker.is_available(
+            tenant_id,
+            _service_key(provider_id, service_id),
+            INVOICE_OPERATION,
+        ):
+            skipped.append(
+                {
+                    "provider_id": provider_id,
+                    "service_id": service_id,
+                    "reason": "circuit_open",
+                }
+            )
+            continue
         prior = priors.get(_service_key(provider_id, service_id)) or default_invoice_prior(
             provider_id,
             service_id,
@@ -299,6 +314,11 @@ def create_invoice_routing_decision(
         "skipped_provider_services": skipped,
     }
     payload["skipped_provider_services"] = skipped
+    metrics = dict(payload.get("metrics", {}))
+    if "routing_overhead_ms" in metrics:
+        metrics["document_routing_overhead_ms"] = metrics["routing_overhead_ms"]
+    metrics["routing_overhead_ms"] = round((perf_counter() - started_at) * 1000, 3)
+    payload["metrics"] = metrics
     decision.operation = INVOICE_OPERATION
     decision.decision_json = payload
     session.add(decision)

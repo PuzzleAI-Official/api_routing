@@ -45,6 +45,11 @@ class IdempotencyConflictError(GatewayError):
     status_code = 409
 
 
+class DependencyUnavailableError(GatewayError):
+    code = ApiErrorCode.DEPENDENCY_UNAVAILABLE
+    status_code = 503
+
+
 class ProviderUnavailableError(GatewayError):
     code = ApiErrorCode.PROVIDER_UNAVAILABLE
     status_code = 503

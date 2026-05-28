@@ -20,7 +20,7 @@ from puzzle_gateway.documents.workflow_priors import (
     upsert_workflow_prior,
     workflow_provider_service_statuses,
 )
-from puzzle_gateway.seed import seed_default_tenant
+from puzzle_gateway.seed import seed_default_tenant, seed_phase4b_staging_tenant
 from puzzle_gateway.storage import get_object_store
 
 DEFAULT_DOCUMENT_PROVIDERS = "mindee,veryfi,nanonets,klippa"
@@ -180,10 +180,20 @@ def _run_command(args: argparse.Namespace) -> bool:  # noqa: PLR0911
                 ]
             )
         return True
+    if args.command == "seed-phase4b-staging":
+        with SessionLocal() as session:
+            tenant, api_key = seed_phase4b_staging_tenant(
+                session,
+                name=args.name,
+                region=args.region,
+            )
+            session.commit()
+            _print_json({"tenant_id": tenant.id, "api_key": api_key})
+        return True
     return False
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0915
     parser = argparse.ArgumentParser(prog="puzzle-gateway")
     subcommands = parser.add_subparsers(dest="command")
     import_registry = subcommands.add_parser("import-provider-registry")
@@ -236,6 +246,9 @@ def main() -> None:
         choices=[item.value for item in InvoiceLineItemsMode],
         default=InvoiceLineItemsMode.PREFERRED.value,
     )
+    seed_phase4b = subcommands.add_parser("seed-phase4b-staging")
+    seed_phase4b.add_argument("--name", default="phase4b-staging")
+    seed_phase4b.add_argument("--region", default="us-east4")
     args = parser.parse_args()
 
     create_all()

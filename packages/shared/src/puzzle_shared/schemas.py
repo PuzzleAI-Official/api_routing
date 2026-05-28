@@ -15,6 +15,7 @@ class ApiErrorCode(StrEnum):
     RATE_LIMITED = "rate_limited"
     QUOTA_EXCEEDED = "quota_exceeded"
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+    DEPENDENCY_UNAVAILABLE = "dependency_unavailable"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     TIMEOUT = "timeout"
     INTERNAL_ERROR = "internal_error"

@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import os
 from dataclasses import dataclass
+from importlib import import_module
+from typing import Any, Protocol
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select
@@ -19,6 +21,12 @@ def _b64(value: bytes) -> str:
 
 def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode(value.encode("ascii"))
+
+
+class EnvelopeKms(Protocol):
+    def wrap_key(self, data_key: bytes, *, aad: bytes) -> str: ...
+
+    def unwrap_key(self, wrapped_key: str, *, aad: bytes) -> bytes: ...
 
 
 @dataclass(frozen=True)
@@ -40,9 +48,50 @@ class LocalEnvelopeKms:
         return AESGCM(self.master_key).decrypt(payload[:12], payload[12:], aad)
 
 
+@dataclass
+class CloudKmsEnvelopeKms:
+    key_name: str
+    client: Any | None = None
+
+    @property
+    def kms_client(self) -> Any:
+        if self.client is None:
+            kms_v1 = import_module("google.cloud.kms_v1")
+            self.client = kms_v1.KeyManagementServiceClient()
+        return self.client
+
+    def wrap_key(self, data_key: bytes, *, aad: bytes) -> str:
+        response = self.kms_client.encrypt(
+            request={
+                "name": self.key_name,
+                "plaintext": data_key,
+                "additional_authenticated_data": aad,
+            }
+        )
+        return _b64(response.ciphertext)
+
+    def unwrap_key(self, wrapped_key: str, *, aad: bytes) -> bytes:
+        response = self.kms_client.decrypt(
+            request={
+                "name": self.key_name,
+                "ciphertext": _unb64(wrapped_key),
+                "additional_authenticated_data": aad,
+            }
+        )
+        return bytes(response.plaintext)
+
+
+def get_envelope_kms() -> EnvelopeKms:
+    if settings.kms_backend == "gcp":
+        if not settings.kms_key_name:
+            raise ValidationError("PUZZLE_KMS_KEY_NAME is required for GCP KMS")
+        return CloudKmsEnvelopeKms(settings.kms_key_name)
+    return LocalEnvelopeKms.from_settings()
+
+
 class Vault:
-    def __init__(self, kms: LocalEnvelopeKms | None = None) -> None:
-        self.kms = kms or LocalEnvelopeKms.from_settings()
+    def __init__(self, kms: EnvelopeKms | None = None) -> None:
+        self.kms = kms or get_envelope_kms()
 
     def store(
         self,

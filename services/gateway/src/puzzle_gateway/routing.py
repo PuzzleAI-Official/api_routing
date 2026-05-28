@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -103,6 +104,7 @@ def create_routing_decision(
     request_id: str | None = None,
     constraints: dict[str, Any] | None = None,
 ) -> RoutingDecision:
+    started_at = perf_counter()
     request_id = request_id or str(uuid4())
     provider_set = get_provider_set(session, tenant_id=tenant_id, name=provider_set_name)
     candidates, skipped = _candidates_from_provider_set(
@@ -139,12 +141,16 @@ def create_routing_decision(
         ],
         constraints=constraints or {},
     )
+    decision_json = view.model_dump(mode="json")
+    decision_json["metrics"] = {
+        "routing_overhead_ms": round((perf_counter() - started_at) * 1000, 3)
+    }
     row = RoutingDecision(
         tenant_id=tenant_id,
         request_id=request_id,
         operation=operation,
         strategy=strategy.value,
-        decision_json=view.model_dump(mode="json"),
+        decision_json=decision_json,
     )
     session.add(row)
     session.flush()

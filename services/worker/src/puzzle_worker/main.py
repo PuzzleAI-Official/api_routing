@@ -6,11 +6,11 @@ from puzzle_gateway.circuit_breaker import CircuitBreaker
 from puzzle_gateway.config import settings
 from puzzle_gateway.db import SessionLocal, create_all
 from puzzle_gateway.jobs import claim_next_queued_job, process_job_once
-from puzzle_gateway.kv import InMemoryKVStore
+from puzzle_gateway.kv import get_kv_store
 
 
 def run_once(job_id: str) -> None:
-    kv = InMemoryKVStore()
+    kv = get_kv_store()
     breaker = CircuitBreaker(
         kv,
         failure_threshold=settings.circuit_failure_threshold,
@@ -29,6 +29,7 @@ def main() -> None:
             session.commit()
         if job is not None:
             run_once(job.id)
+            continue
         time.sleep(1)
 
 

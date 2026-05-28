@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from puzzle_shared import ApiErrorCode
+from puzzle._types import ApiErrorCode
 
 
 class PuzzleError(Exception):
@@ -44,11 +44,19 @@ class PuzzleIdempotencyConflictError(PuzzleError):
     pass
 
 
+class PuzzleDependencyUnavailableError(PuzzleError):
+    pass
+
+
 class PuzzleProviderUnavailableError(PuzzleError):
     pass
 
 
 class PuzzleTimeoutError(PuzzleError):
+    pass
+
+
+class PuzzleTransportError(PuzzleError):
     pass
 
 
@@ -59,6 +67,7 @@ ERROR_CLASS_BY_CODE: dict[ApiErrorCode, type[PuzzleError]] = {
     ApiErrorCode.RATE_LIMITED: PuzzleRateLimitError,
     ApiErrorCode.QUOTA_EXCEEDED: PuzzleQuotaExceededError,
     ApiErrorCode.IDEMPOTENCY_CONFLICT: PuzzleIdempotencyConflictError,
+    ApiErrorCode.DEPENDENCY_UNAVAILABLE: PuzzleDependencyUnavailableError,
     ApiErrorCode.PROVIDER_UNAVAILABLE: PuzzleProviderUnavailableError,
     ApiErrorCode.TIMEOUT: PuzzleTimeoutError,
 }

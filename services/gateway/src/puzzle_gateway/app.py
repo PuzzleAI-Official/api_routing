@@ -26,6 +26,7 @@ from puzzle_gateway.auth import authenticate_api_key
 from puzzle_gateway.circuit_breaker import CircuitBreaker
 from puzzle_gateway.config import settings
 from puzzle_gateway.db import create_all, get_session
+from puzzle_gateway.deletion import DataDeletionTargetNotFoundError, perform_data_deletion
 from puzzle_gateway.documents.adapters import DocumentFile
 from puzzle_gateway.documents.execution import execute_document_routing_decision
 from puzzle_gateway.documents.manifests import DOCUMENT_OPERATION
@@ -44,7 +45,7 @@ from puzzle_gateway.documents.workflows import (
 from puzzle_gateway.errors import GatewayError
 from puzzle_gateway.idempotency import begin_operation, complete_operation, request_hash
 from puzzle_gateway.jobs import submit_job
-from puzzle_gateway.kv import InMemoryKVStore
+from puzzle_gateway.kv import get_kv_store
 from puzzle_gateway.models import Job, ProviderServiceManifest, Tenant
 from puzzle_gateway.provider_sets import upsert_provider_set
 from puzzle_gateway.providers import execute_routing_decision
@@ -67,7 +68,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Puzzle Gateway", version=__version__, lifespan=lifespan)
-kv = InMemoryKVStore()
+kv = get_kv_store()
 circuit_breaker = CircuitBreaker(
     kv,
     failure_threshold=settings.circuit_failure_threshold,
@@ -91,6 +92,12 @@ class MockProviderCreateRequest(BaseModel):
     quality_score: int = 90
     cost_units: int = 10
     latency_ms: int = 100
+
+
+class DataDeletionCreateRequest(BaseModel):
+    target_type: str
+    target_id: str
+    reason: str | None = None
 
 
 @app.exception_handler(GatewayError)
@@ -203,14 +210,32 @@ def _invoice_payload_hash(
     )
 
 
+def _health_payload() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+def _ready_payload() -> dict[str, str]:
+    return {"status": "ready"}
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return _health_payload()
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    return _ready_payload()
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    return _health_payload()
 
 
 @app.get("/readyz")
 def readyz() -> dict[str, str]:
-    return {"status": "ready"}
+    return _ready_payload()
 
 
 @app.get("/version")
@@ -222,7 +247,7 @@ def version() -> dict[str, str]:
 def admin_create_tenant(
     body: TenantCreateRequest,
     session: Annotated[Session, Depends(get_session)],
-) -> dict[str, str]:
+) -> dict[str, Any]:
     tenant = create_tenant(session, name=body.name, region=body.region)
     session.commit()
     return {"tenant_id": tenant.id}
@@ -333,6 +358,33 @@ def admin_list_workflow_provider_services(
     ]
 
 
+@app.post("/v1/admin/tenants/{tenant_id}/deletion-requests", dependencies=[Depends(require_admin)])
+def admin_create_data_deletion_request(
+    tenant_id: str,
+    body: DataDeletionCreateRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> dict[str, Any]:
+    try:
+        row = perform_data_deletion(
+            session,
+            tenant_id=tenant_id,
+            target_type=body.target_type,
+            target_id=body.target_id,
+            requested_by="local_admin",
+            reason=body.reason,
+            object_store=get_object_store(),
+        )
+    except DataDeletionTargetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    response = {
+        "deletion_request_id": row.id,
+        "status": row.status,
+        "summary": row.summary_json,
+    }
+    session.commit()
+    return response
+
+
 @app.post("/v1/core/mock:run")
 def run_mock(
     body: CoreMockRunRequest,
@@ -417,11 +469,28 @@ def submit_mock(
     idempotency_key_header: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict[str, str]:
     idempotency_key = idempotency_key_header or body.idempotency_key
+    if not idempotency_key:
+        raise HTTPException(status_code=422, detail="Idempotency key is required")
+
+    start = begin_operation(
+        session,
+        tenant_id=tenant.id,
+        operation=body.operation,
+        idempotency_key=idempotency_key,
+        payload_hash=request_hash(body.model_dump(mode="json")),
+    )
+    if start.replay_response is not None:
+        replay_response = dict(start.replay_response)
+        replay_response["replayed"] = True
+        return replay_response
+
     check_rate_limit(
         kv,
         tenant_id=tenant.id,
         limit_per_minute=settings.default_rate_limit_per_minute,
     )
+    check_tenant_quota(session, tenant)
+    check_platform_spend(session, platform_limit_units=settings.platform_spend_limit_units)
     decision = create_routing_decision(
         session,
         tenant_id=tenant.id,
@@ -452,12 +521,19 @@ def submit_mock(
             "operation": body.operation,
         },
     )
+    response = {"job_id": job.id, "status": job.status, "request_id": request.state.request_id}
+    complete_operation(
+        session,
+        start.record,
+        response_json=response,
+        billing_entry_id=None,
+    )
     session.commit()
-    return {"job_id": job.id, "status": job.status, "request_id": request.state.request_id}
+    return response
 
 
 @app.post("/v1/documents:process")
-async def process_document(
+def process_document(
     request: Request,
     tenant: Annotated[Tenant, Depends(current_tenant)],
     session: Annotated[Session, Depends(get_session)],
@@ -470,7 +546,7 @@ async def process_document(
     if not idempotency_key:
         raise HTTPException(status_code=422, detail="Idempotency key is required")
 
-    data = await file.read()
+    data = file.file.read()
     if not data:
         raise HTTPException(status_code=422, detail="Document file is empty")
     filename = file.filename or "document"
@@ -501,6 +577,7 @@ async def process_document(
     )
     check_tenant_quota(session, tenant)
     check_platform_spend(session, platform_limit_units=settings.platform_spend_limit_units)
+    session.commit()
     object_store = get_object_store()
     document_row = store_document_object(
         session,
@@ -560,7 +637,7 @@ async def process_document(
 
 
 @app.post("/v1/documents:submit")
-async def submit_document(
+def submit_document(
     request: Request,
     tenant: Annotated[Tenant, Depends(current_tenant)],
     session: Annotated[Session, Depends(get_session)],
@@ -573,7 +650,7 @@ async def submit_document(
     if not idempotency_key:
         raise HTTPException(status_code=422, detail="Idempotency key is required")
 
-    data = await file.read()
+    data = file.file.read()
     if not data:
         raise HTTPException(status_code=422, detail="Document file is empty")
     filename = file.filename or "document"
@@ -602,6 +679,7 @@ async def submit_document(
         tenant_id=tenant.id,
         limit_per_minute=settings.default_rate_limit_per_minute,
     )
+    session.commit()
     object_store = get_object_store()
     document_row = store_document_object(
         session,
@@ -662,7 +740,7 @@ async def submit_document(
 
 
 @app.post("/v1/documents/invoices:extract")
-async def extract_invoice(
+def extract_invoice(
     request: Request,
     tenant: Annotated[Tenant, Depends(current_tenant)],
     session: Annotated[Session, Depends(get_session)],
@@ -675,7 +753,7 @@ async def extract_invoice(
     if not idempotency_key:
         raise HTTPException(status_code=422, detail="Idempotency key is required")
 
-    data = await file.read()
+    data = file.file.read()
     if not data:
         raise HTTPException(status_code=422, detail="Document file is empty")
     filename = file.filename or "document"
@@ -706,6 +784,7 @@ async def extract_invoice(
     )
     check_tenant_quota(session, tenant)
     check_platform_spend(session, platform_limit_units=settings.platform_spend_limit_units)
+    session.commit()
     object_store = get_object_store()
     document_row = store_document_object(
         session,
@@ -767,7 +846,7 @@ async def extract_invoice(
 
 
 @app.post("/v1/documents/invoices:submit")
-async def submit_invoice(
+def submit_invoice(
     request: Request,
     tenant: Annotated[Tenant, Depends(current_tenant)],
     session: Annotated[Session, Depends(get_session)],
@@ -780,7 +859,7 @@ async def submit_invoice(
     if not idempotency_key:
         raise HTTPException(status_code=422, detail="Idempotency key is required")
 
-    data = await file.read()
+    data = file.file.read()
     if not data:
         raise HTTPException(status_code=422, detail="Document file is empty")
     filename = file.filename or "document"
@@ -811,6 +890,7 @@ async def submit_invoice(
     )
     check_tenant_quota(session, tenant)
     check_platform_spend(session, platform_limit_units=settings.platform_spend_limit_units)
+    session.commit()
     object_store = get_object_store()
     document_row = store_document_object(
         session,
