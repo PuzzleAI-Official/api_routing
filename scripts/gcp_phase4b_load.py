@@ -11,7 +11,8 @@ from typing import Any
 
 import httpx
 
-
+HTTP_SUCCESS_CEILING = 400
+MAX_ERROR_RATE = 0.01
 TINY_PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n"
 
 
@@ -76,7 +77,7 @@ async def _run_one(
                 headers={**headers, "Idempotency-Key": idem},
                 json={"payload": {"load": "core_async", "sequence": sequence}},
             )
-            if wait_async and response.status_code < 400:
+            if wait_async and response.status_code < HTTP_SUCCESS_CEILING:
                 await _wait_job(client, api_key, response.json()["job_id"])
         elif scenario == "documents_sync":
             response = await client.post(
@@ -92,7 +93,7 @@ async def _run_one(
                 files={"file": ("load.pdf", TINY_PDF, "application/pdf")},
                 data={"metadata": "{}"},
             )
-            if wait_async and response.status_code < 400:
+            if wait_async and response.status_code < HTTP_SUCCESS_CEILING:
                 await _wait_job(client, api_key, response.json()["job_id"])
         elif scenario == "invoices_sync":
             response = await client.post(
@@ -106,7 +107,7 @@ async def _run_one(
                 headers={**headers, "Idempotency-Key": idem},
                 files={"file": ("load.pdf", TINY_PDF, "application/pdf")},
             )
-            if wait_async and response.status_code < 400:
+            if wait_async and response.status_code < HTTP_SUCCESS_CEILING:
                 await _wait_job(client, api_key, response.json()["job_id"])
         else:
             raise ValueError(f"unknown scenario: {scenario}")
@@ -232,7 +233,7 @@ async def main() -> None:
     summary["target_duration_seconds"] = args.duration_seconds
     summary["scenarios"] = scenarios
     print(json.dumps(summary, indent=2, sort_keys=True))
-    if summary["error_rate"] > 0.01:
+    if summary["error_rate"] > MAX_ERROR_RATE:
         raise SystemExit("error rate exceeded 1%")
 
 

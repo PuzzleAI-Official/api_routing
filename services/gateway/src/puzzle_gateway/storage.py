@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-from uuid import uuid4
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol, cast
 from urllib.parse import quote, unquote, urlparse
+from uuid import uuid4
 
 from puzzle_gateway.config import settings
 from puzzle_gateway.errors import ValidationError
