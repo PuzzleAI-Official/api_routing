@@ -1176,14 +1176,14 @@ requires-dist = [{ name = "puzzle-gateway", editable = "services/gateway" }]
 
 [[package]]
 name = "puzzleai"
-version = "0.1.0a1"
+version = "0.1.0a2"
 source = { editable = "packages/puzzle" }
 dependencies = [
     { name = "httpx" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "httpx", specifier = ">=0.27" }]
+requires-dist = [{ name = "httpx", specifier = ">=0.27,<1.0" }]
 
 [[package]]
 name = "pyasn1"
