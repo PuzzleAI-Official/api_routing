@@ -1176,7 +1176,7 @@ requires-dist = [{ name = "puzzle-gateway", editable = "services/gateway" }]
 
 [[package]]
 name = "puzzleai"
-version = "0.1.0a2"
+version = "0.1.0a3"
 source = { editable = "packages/puzzle" }
 dependencies = [
     { name = "httpx" },

@@ -69,5 +69,5 @@ python -m hatchling build -t wheel
 Inspect the wheel:
 
 ```bash
-python -c "import zipfile; print('\n'.join(zipfile.ZipFile('dist/puzzleai-0.1.0a2-py3-none-any.whl').namelist()))"
+python -c "import zipfile; print('\n'.join(zipfile.ZipFile('dist/puzzleai-0.1.0a3-py3-none-any.whl').namelist()))"
 ```
